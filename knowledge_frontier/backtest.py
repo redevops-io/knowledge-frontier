@@ -252,6 +252,89 @@ def run_assess_acceptance(seed: int = 7) -> Dict[str, AssessMetrics]:
     return out
 
 
+# ── RETENTION scenario: a learner who FORGETS — does spaced review beat fixed/none? ──
+# Real learners forget: a concept's recall decays as 2**(-elapsed/stability). Successful review GROWS
+# stability (the spacing effect), so the right review interval EXPANDS. Under a fixed step budget that
+# forces a trade-off (review old vs teach new), a stability-aware ('spaced') policy should reach higher
+# importance-weighted RETAINED understanding at the horizon than a fixed-interval reviewer (which over-
+# reviews and starves new teaching) or no review at all (everything decays). This measures whether the
+# retention MODEL helps on controlled forgetting learners — still not real-world pedagogy.
+from . import Mastery as _M, retention_need, retrievability  # noqa: E402
+
+_FIRST_STABILITY = 6.0
+_SPACING = 2.0
+_TARGET_R = 0.8
+
+
+@dataclass(frozen=True)
+class RetentionMetrics:
+    variant: str
+    mean_retained: float     # importance-weighted true retrievability at the horizon
+    mean_reviews: float
+    mean_taught: float
+
+
+def _retention_graph(rng) -> ConceptGraph:
+    return ConceptGraph({f"c{i}": Concept(f"c{i}", difficulty=rng.uniform(0.3, 0.7)) for i in range(12)})
+
+
+def run_retention_session(graph: ConceptGraph, horizon: int, *, mode: str, rng_seed: int = 0) -> Tuple[float, int, int]:
+    """mode: 'spaced' (stability-aware reviews), 'fixed' (flat-interval reviews), 'none' (teach-only).
+    Ground truth = true stability per concept (grows on review) + exponential decay; belief mirrors it
+    except 'fixed' hides stability (→ flat at_risk_staleness) and 'none' zeroes the review weight."""
+    if mode == "none":
+        policy = FrontierPolicy(at_risk_staleness=1e9)   # nothing ever falls 'due' ⇒ teach-only control
+    else:
+        policy = FrontierPolicy(at_risk_staleness=_FIRST_STABILITY, target_retrievability=_TARGET_R)
+    true_stab: Dict[str, float] = {}
+    last_seen: Dict[str, float] = {}
+    taught: set = set()
+    reviews = 0
+    for step in range(horizon):
+        belief: Dict[str, Mastery] = {}
+        for c in graph.concepts:
+            if c in taught:
+                stab = true_stab[c] if mode == "spaced" else 0.0
+                belief[c] = _M(prob=0.95, exposed=True, assessed=True,
+                               staleness=float(step) - last_seen[c], stability=stab)
+            else:
+                belief[c] = _M()
+        choice = next_step(graph, belief, policy=policy)
+        if choice.action == FrontierAction.STOP:
+            continue                                   # idle: time still passes, memory still decays
+        cid = choice.concept_id
+        if choice.action == FrontierAction.REVIEW:
+            true_stab[cid] = true_stab.get(cid, _FIRST_STABILITY) * _SPACING
+            last_seen[cid] = float(step)
+            reviews += 1
+        else:                                          # TEACH (first exposure)
+            true_stab[cid] = _FIRST_STABILITY
+            last_seen[cid] = float(step)
+            taught.add(cid)
+    # retained understanding at the horizon = importance-weighted true retrievability
+    now = float(horizon)
+    tw = sum(0.3 + 0.7 * graph.importance(c) for c in graph.concepts)
+    got = 0.0
+    for c in graph.concepts:
+        if c in taught:
+            r = retrievability(_M(prob=0.95, exposed=True, stability=true_stab[c],
+                                  staleness=now - last_seen[c]))
+            got += (0.3 + 0.7 * graph.importance(c)) * r
+    return (got / tw if tw else 0.0), reviews, len(taught)
+
+
+def run_retention_acceptance(seed: int = 7, n: int = 120, horizon: int = 40) -> Dict[str, RetentionMetrics]:
+    rng = random.Random(seed)
+    tasks = [_retention_graph(rng) for _ in range(n)]
+    out: Dict[str, RetentionMetrics] = {}
+    for mode in ("spaced", "fixed", "none"):
+        res = [run_retention_session(g, horizon, mode=mode, rng_seed=3000 + i) for i, g in enumerate(tasks)]
+        k = len(res)
+        out[mode] = RetentionMetrics(mode, sum(r[0] for r in res) / k,
+                                     sum(r[1] for r in res) / k, sum(r[2] for r in res) / k)
+    return out
+
+
 def run_acceptance(seed: int = 7) -> Dict[str, StrategyMetrics]:
     tasks = make_frontier_benchmark(seed)
     out: Dict[str, StrategyMetrics] = {}

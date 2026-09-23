@@ -26,6 +26,7 @@ real-world pedagogy.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -64,6 +65,10 @@ class Mastery:
     misconception: bool = False                   # an active wrong belief (worse than not knowing)
     staleness: float = 0.0                        # 'time' since last reinforced (retention decay proxy)
     assessed: bool = False                        # has this belief been verified (vs a prior guess)?
+    stability: float = 0.0                        # memory strength: the staleness at which recall halves.
+    #   0 ⇒ no forgetting model (v0.1.0 behaviour: retention uses the flat `at_risk_staleness` proxy).
+    #   >0 ⇒ retrievability decays as 2**(-staleness/stability); it GROWS with each successful review
+    #   (the spacing effect), so reviews are scheduled at expanding, per-concept-correct intervals.
 
 
 KnowledgeState = Mapping[str, Mastery]
@@ -127,15 +132,67 @@ def expected_gain(graph: ConceptGraph, cid: str, m: Mastery, mastery_threshold: 
     return _clamp(room * (0.4 + 0.6 * graph.importance(cid)))
 
 
-def retention_need(m: Mastery, at_risk_staleness: float) -> float:
-    """For a once-mastered concept, how overdue a review is (0 if fresh or never mastered)."""
-    if m.prob < 0.6 or at_risk_staleness <= 0:
+def retrievability(m: Mastery) -> float:
+    """P(recall right now), 0..1. With a stability model it decays as 2**(-staleness/stability)
+    (the forgetting curve); without one it falls back to the flat belief `prob`."""
+    if m.stability <= 0:
+        return _clamp(m.prob)
+    return _clamp(2.0 ** (-(m.staleness / m.stability)))
+
+
+def retention_need(m: Mastery, at_risk_staleness: float, *,
+                   target_retrievability: float = 0.9) -> float:
+    """How overdue a once-learned concept is for review. 0 while fresh; ≥1 once due.
+
+    With a stability model, 'due' is when retrievability has fallen to `target_retrievability`
+    — a per-concept interval that EXPANDS as stability grows (spaced repetition). Without one it
+    reduces to the v0.1.0 flat proxy (staleness / at_risk_staleness)."""
+    if m.prob < 0.6:
+        return 0.0
+    if m.stability > 0:
+        due = m.stability * math.log2(1.0 / target_retrievability)   # staleness where R hits target
+        return (m.staleness / due) if due > 0 else 0.0               # ≥1 ⇒ due; grows while overdue
+    if at_risk_staleness <= 0:
         return 0.0
     return _clamp(m.staleness / at_risk_staleness)
 
 
+def reinforce(m: Mastery, *, success: bool = True, first_stability: float = 1.0,
+              spacing_factor: float = 2.0, fail_prob: float = 0.4) -> Mastery:
+    """Fold a TEACH/REVIEW outcome into memory strength (the write side of the forgetting model).
+
+    A SUCCESS resets staleness, lifts the belief, and GROWS stability (first exposure → first_stability;
+    each later success × spacing_factor) — so the next review is due later, the spacing effect. A FAILURE
+    drops the belief and collapses stability back to a short interval (lapses must be re-learned)."""
+    if success:
+        prob = _clamp(m.prob + 0.5 * (1.0 - m.prob)) if m.prob else 0.9
+        stability = first_stability if m.stability <= 0 else m.stability * spacing_factor
+        return Mastery(prob=max(prob, 0.85), exposed=True, misconception=False,
+                       staleness=0.0, assessed=True, stability=stability)
+    return Mastery(prob=min(m.prob, fail_prob), exposed=True, misconception=m.misconception,
+                   staleness=0.0, assessed=True, stability=first_stability)
+
+
+def observe(m: Mastery, correct: bool, *, learn: float = 0.3, slip: float = 0.1,
+            guess: float = 0.2) -> Mastery:
+    """Bayesian-Knowledge-Tracing belief update from one graded response (the read side).
+
+    Posterior P(known) given the answer (slip = knew-but-wrong, guess = didn't-know-but-right), then a
+    learning transition (`learn`). Marks the belief `assessed` (grounded in a real observation) and resets
+    staleness. Correctness updates BELIEF; use `reinforce` to also grow retention stability."""
+    p = _clamp(m.prob)
+    if correct:
+        post = (p * (1 - slip)) / max(p * (1 - slip) + (1 - p) * guess, 1e-9)
+    else:
+        post = (p * slip) / max(p * slip + (1 - p) * (1 - guess), 1e-9)
+    p_after = _clamp(post + (1 - post) * learn)
+    return Mastery(prob=p_after, exposed=True, misconception=m.misconception,
+                   staleness=0.0, assessed=True, stability=m.stability)
+
+
 def concept_state(graph: ConceptGraph, state: KnowledgeState, cid: str, *,
-                  mastery_threshold: float = 0.85, at_risk_staleness: float = 4.0) -> ConceptState:
+                  mastery_threshold: float = 0.85, at_risk_staleness: float = 4.0,
+                  target_retrievability: float = 0.9) -> ConceptState:
     m = _mastery(state, cid)
     if m.misconception:
         return ConceptState.MISCONCEPTION
@@ -143,7 +200,9 @@ def concept_state(graph: ConceptGraph, state: KnowledgeState, cid: str, *,
         return ConceptState.NOT_ENCOUNTERED
     if m.prob >= mastery_threshold:
         return (ConceptState.RETENTION_AT_RISK
-                if retention_need(m, at_risk_staleness) >= 1.0 else ConceptState.MASTERED)
+                if retention_need(m, at_risk_staleness,
+                                  target_retrievability=target_retrievability) >= 1.0
+                else ConceptState.MASTERED)
     if m.prob >= 0.6:
         return ConceptState.PROBABLY_UNDERSTOOD
     if uncertainty(m) >= 0.6:
@@ -173,6 +232,8 @@ class FrontierPolicy:
     prereq_threshold: float = 0.7
     mastery_threshold: float = 0.85
     at_risk_staleness: float = 4.0
+    target_retrievability: float = 0.9   # review a concept once its recall probability falls to this
+                                         # (only used when a concept carries a stability model)
     w_importance: float = 0.4
     w_gain: float = 0.4
     w_uncertainty: float = 0.15
@@ -217,7 +278,7 @@ def next_step(graph: ConceptGraph, state: KnowledgeState, *, objective: Optional
     for cid in graph.concepts:
         m = _mastery(state, cid)
         if m.prob >= p.mastery_threshold and not m.misconception:      # mastered
-            need = retention_need(m, p.at_risk_staleness)
+            need = retention_need(m, p.at_risk_staleness, target_retrievability=p.target_retrievability)
             if need >= 1.0:
                 candidates.append((p.w_retention * need * (0.5 + 0.5 * graph.importance(cid)),
                                    cid, FrontierAction.REVIEW))
@@ -242,7 +303,8 @@ def next_step(graph: ConceptGraph, state: KnowledgeState, *, objective: Optional
 
     prio, cid, action = max(candidates, key=lambda c: c[0])
     st = concept_state(graph, state, cid, mastery_threshold=p.mastery_threshold,
-                       at_risk_staleness=p.at_risk_staleness)
+                       at_risk_staleness=p.at_risk_staleness,
+                       target_retrievability=p.target_retrievability)
     verb = {FrontierAction.REVIEW: "Review", FrontierAction.ASSESS: "Assess"}.get(action, "Advance")
     return FrontierChoice(action, concept_id=cid, state=st, priority=prio,
                           rationale=(f"{verb} '{cid}' (importance {graph.importance(cid):.2f}, "
@@ -252,5 +314,6 @@ def next_step(graph: ConceptGraph, state: KnowledgeState, *, objective: Optional
 __all__ = [
     "ConceptState", "Concept", "Mastery", "KnowledgeState", "ConceptGraph",
     "prerequisites_met", "uncertainty", "expected_gain", "retention_need", "concept_state",
+    "retrievability", "reinforce", "observe",
     "FrontierAction", "StopReason", "FrontierPolicy", "FrontierChoice", "next_step",
 ]

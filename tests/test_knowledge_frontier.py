@@ -159,3 +159,44 @@ def test_frontier_reports_blocked_on_prereqs_when_only_blocked_remain():
     assert step.action == FrontierAction.TEACH and step.concept_id == "a"   # a is eligible
 
 
+
+
+def test_retrievability_decays_with_stability():
+    from knowledge_frontier import Mastery, retrievability
+    fresh = Mastery(prob=0.9, exposed=True, stability=4.0, staleness=0.0)
+    half = Mastery(prob=0.9, exposed=True, stability=4.0, staleness=4.0)   # one stability unit
+    assert retrievability(fresh) == 1.0
+    assert abs(retrievability(half) - 0.5) < 1e-9
+    # no stability model ⇒ falls back to belief (v0.1.0 behaviour)
+    assert retrievability(Mastery(prob=0.7, exposed=True)) == 0.7
+
+
+def test_reinforce_grows_stability_on_success_and_collapses_on_failure():
+    from knowledge_frontier import Mastery, reinforce
+    m0 = Mastery(prob=0.9, exposed=True, stability=3.0, staleness=5.0)
+    ok = reinforce(m0, success=True, spacing_factor=2.0)
+    assert ok.stability == 6.0 and ok.staleness == 0.0 and ok.prob >= 0.85 and ok.assessed
+    first = reinforce(Mastery(prob=0.0, exposed=False), success=True, first_stability=2.0)
+    assert first.stability == 2.0
+    bad = reinforce(m0, success=False, first_stability=1.0)
+    assert bad.stability == 1.0 and bad.prob <= m0.prob
+
+
+def test_observe_is_a_bkt_update_and_marks_assessed():
+    from knowledge_frontier import Mastery, observe
+    prior = Mastery(prob=0.5, exposed=True, assessed=False)
+    up = observe(prior, correct=True)
+    down = observe(prior, correct=False)
+    assert up.prob > prior.prob and down.prob < prior.prob
+    assert up.assessed and down.assessed and up.staleness == 0.0
+
+
+def test_spaced_retention_need_is_due_when_recall_hits_target():
+    from knowledge_frontier import Mastery, retention_need
+    # stability=10, target 0.9 ⇒ due at staleness ≈ 10*log2(1/0.9) ≈ 1.52
+    m = Mastery(prob=0.9, exposed=True, stability=10.0)
+    from dataclasses import replace
+    assert retention_need(replace(m, staleness=1.0), 4.0, target_retrievability=0.9) < 1.0   # not yet due
+    assert retention_need(replace(m, staleness=2.0), 4.0, target_retrievability=0.9) >= 1.0  # overdue
+    # stability=0 ⇒ v0.1.0 flat proxy
+    assert retention_need(Mastery(prob=0.9, exposed=True, staleness=4.0), 4.0) >= 1.0
