@@ -1,6 +1,6 @@
 [project]
 name = "knowledge-frontier"
-version = "0.1.0"
+version = "0.2.0"
 description = "Domain-neutral 'what to learn/teach next' primitive: a prerequisite concept graph + mastery model + deterministic frontier selection (TEACH / REVIEW / ASSESS / STOP)."
 readme = "README.md"
 requires-python = ">=3.11"

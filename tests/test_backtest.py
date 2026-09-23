@@ -94,3 +94,21 @@ def test_assess_advantage_is_material_in_the_mean():
     on = [run_assess_acceptance(s)["assess_on"].mean_true_mastery for s in SEEDS]
     off = [run_assess_acceptance(s)["assess_off"].mean_true_mastery for s in SEEDS]
     assert statistics.mean(on) - statistics.mean(off) >= 0.08
+
+
+def test_spaced_review_beats_fixed_and_none_on_retention():
+    """The retention MODEL: on a forgetting learner, spaced review (stability-aware) retains materially
+    more importance-weighted understanding than fixed-interval review or no review."""
+    from knowledge_frontier.backtest import run_retention_acceptance
+    for seed in SEEDS:
+        r = run_retention_acceptance(seed)
+        assert r["spaced"].mean_retained > r["fixed"].mean_retained > r["none"].mean_retained, seed
+        # and it does so efficiently — not by simply reviewing more often than the fixed reviewer
+        assert r["spaced"].mean_reviews <= r["fixed"].mean_reviews + 1e-6, seed
+
+
+def test_spaced_review_advantage_is_material():
+    from knowledge_frontier.backtest import run_retention_acceptance
+    spaced = [run_retention_acceptance(s)["spaced"].mean_retained for s in SEEDS]
+    fixed = [run_retention_acceptance(s)["fixed"].mean_retained for s in SEEDS]
+    assert statistics.mean(spaced) - statistics.mean(fixed) >= 0.15
