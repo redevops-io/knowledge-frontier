@@ -62,3 +62,7 @@ Public surface: `Concept`, `ConceptGraph`, `Mastery`, `ConceptState`, `FrontierA
 `FrontierPolicy`, `FrontierChoice`, `next_step`, plus the signal functions (`prerequisites_met`,
 `uncertainty`, `expected_gain`, `retention_need`, `concept_state`, `retrievability`, `reinforce`,
 `observe`).
+
+## License
+
+AGPL-3.0-or-later (see [LICENSE](LICENSE)).
