@@ -1,8 +1,28 @@
 # knowledge-frontier
 
-A **domain-neutral** primitive for deciding *what to learn or teach next* to maximise demonstrated
+**What it does.** A **domain-neutral** primitive for deciding *what to learn or teach next* to maximise demonstrated
 understanding — extracted so multiple products can share one engine (the ReDevOps Agentic Apps stack
-and **learnerbot.ai**).
+and **learnerbot.ai**, a private product not available in this org's public repos).
+
+**Who it's for.** Developers building tutoring or training products who need a deterministic next-step planner
+over a prerequisite graph.
+
+**Maturity: reference** (version 0.2.0; library only; behaviour validated on controlled synthetic learners, not on
+real learners; see [STATUS.md](STATUS.md)).
+
+**3-minute example** (no dependencies beyond the package; see [Use](#use) below for the code):
+```bash
+pip install -e .
+python3 -c "from knowledge_frontier import Concept, ConceptGraph, Mastery, next_step; g=ConceptGraph({c.id:c for c in [Concept('basics'), Concept('advanced', prerequisites=('basics',))]}); print(next_step(g, {'basics': Mastery(prob=0.9, exposed=True)}))"
+```
+
+**Evidence.** `tests/` (CI: `.github/workflows/tests.yml`); the retention figures below come from
+`knowledge_frontier/backtest.py::run_retention_acceptance` on synthetic learners.
+
+**Limitations.** Planning logic only, no pedagogy, content or real-learner validation; consumers such as
+learnerbot.ai are private. See also [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md).
+
+---
 
 Model understanding as a **prerequisite concept graph** with a per-concept **mastery** belief, then pick
 the single best next move by structural importance, prerequisite readiness, expected gain, uncertainty,
@@ -51,12 +71,14 @@ behaviour, so existing callers are unaffected until they populate it.
 
 **Proven on forgetting learners** (`backtest.run_retention_acceptance`, 120 learners): spaced review
 retains **0.755** of importance-weighted understanding at the horizon vs **0.495** for fixed-interval review
-(with *fewer* reviews) and **0.020** for no review. Spacing beats fixed on every seed — validating the
+(with *fewer* reviews) and **0.020** for no review. *Illustrative/synthetic*: these come from simulated forgetting
+learners (`knowledge_frontier/backtest.py`, `run_retention_acceptance(seed=7, n=120, horizon=40)`); re-running that
+function reproduces them (*Internally reproduced*, not externally). Spacing beats fixed on every seed — validating the
 retention *logic*, not real-world pedagogy.
 
 ## Consumers
 - **agentic-os** — `agentic_os.knowledge_frontier` re-exports this package (thin shim).
-- **learnerbot.ai** — wraps it with pedagogy (learner model, Socratic tutoring, assessment, retention).
+- **learnerbot.ai** — a **private product** (not in the public repos; not verifiable from here) that wraps it with pedagogy (learner model, Socratic tutoring, assessment, retention).
 
 Public surface: `Concept`, `ConceptGraph`, `Mastery`, `ConceptState`, `FrontierAction`, `StopReason`,
 `FrontierPolicy`, `FrontierChoice`, `next_step`, plus the signal functions (`prerequisites_met`,
